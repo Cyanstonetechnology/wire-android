@@ -17,6 +17,7 @@
  */
 package com.waz.service.call
 
+
 import android.util.Log
 import com.sun.jna.Pointer
 import com.waz.log.BasicLogging.LogTag
@@ -51,6 +52,7 @@ trait Avs {
   def setProxy(host: String, port: Int): Unit
   def onClientsRequest(wCall: WCall, convId: RConvId, userClients: Map[UserId, Seq[ClientId]]): Unit
   def onSftResponse(wCall: WCall, data: Option[Array[Byte]], ctx: Pointer): Unit
+  def requestVideoStreams(wCall: WCall, convId: RConvId, userClients: Map[UserId, Seq[ClientId]]): Unit
 }
 
 /**
@@ -71,10 +73,10 @@ class AvsImpl() extends Avs with DerivedLogTag {
           val log = l"${showString(newMsg)}"
           level match {
             case LogLevelDebug => debug(log)(AvsLogTag)
-            case LogLevelInfo  => info(log)(AvsLogTag)
-            case LogLevelWarn  => warn(log)(AvsLogTag)
+            case LogLevelInfo => info(log)(AvsLogTag)
+            case LogLevelWarn => warn(log)(AvsLogTag)
             case LogLevelError => error(log)(AvsLogTag)
-            case _             => verbose(log)(AvsLogTag)
+            case _ => verbose(log)(AvsLogTag)
           }
         }
       }, null)
@@ -110,7 +112,7 @@ class AvsImpl() extends Avs with DerivedLogTag {
                             userIdSelf: String,
                             clientIdSelf: String,
                             targetRecipientsJson: String, // Change: was userIdDest but has been re-purposed.
-                            clientIdDest: String,         // Deprecated: AVS will no longer pass a value here.
+                            clientIdDest: String, // Deprecated: AVS will no longer pass a value here.
                             data: Pointer,
                             len: Size_t,
                             isTransient: Boolean,
@@ -124,7 +126,9 @@ class AvsImpl() extends Avs with DerivedLogTag {
           try {
             val message = data.getString(0, "UTF-8")
             val targetRecipients = Option(targetRecipientsJson).map { json =>
-              AvsClientList.decode(json).fold({ throw _ }, identity)
+              AvsClientList.decode(json).fold({
+                throw _
+              }, identity)
             }
 
             cs.onSend(ctx, message, RConvId(convId), targetRecipients)
@@ -211,7 +215,8 @@ class AvsImpl() extends Avs with DerivedLogTag {
       val clientsRequestHandler = new ClientsRequestHandler {
         override def onClientsRequest(inst: Calling.Handle, convId: String, arg: Pointer): Unit = {
           cs.onClientsRequest(RConvId(convId))
-      }}
+        }
+      }
 
       Calling.wcall_set_req_clients_handler(wCall, clientsRequestHandler)
 
@@ -220,7 +225,7 @@ class AvsImpl() extends Avs with DerivedLogTag {
           ActiveSpeakerChangeDecoder.decode(data).foreach { activeSpeakersChange =>
             val activeSpeakers = activeSpeakersChange.audio_levels.map(m => ActiveSpeaker(m.userid, m.clientid, m.audio_level, m.audio_level_now)).toSet
             cs.onActiveSpeakersChanged(RConvId(convId), activeSpeakers)
-        }
+          }
       }
 
       Calling.wcall_set_active_speaker_handler(wCall, activeSpeakersHandler)
@@ -295,7 +300,21 @@ class AvsImpl() extends Avs with DerivedLogTag {
       val responseData = data.getOrElse(Array())
       wcall_sft_resp(wCall, errorCode, responseData, responseData.length, ctx)
     }
+
+  def requestVideoStreams(wCall: WCall, convId: RConvId, userClients: Map[UserId, Seq[ClientId]]): Unit =
+    withAvs {
+      import AvsClientList._
+      val clients = userClients.flatMap { case (userId, clientIds) =>
+        clientIds.map { clientId =>
+          AvsClient(userId.str, clientId.str)
+        }
+      }
+
+      val json = encode(AvsClientList(clients.toSeq))
+      Calling.wcall_request_video_streams(wCall, convId.str, VideoStreamsMode.List, json)
+    }
 }
+
 
 object Avs extends DerivedLogTag {
 
@@ -426,6 +445,14 @@ object Avs extends DerivedLogTag {
   val LogLevelInfo  = 1
   val LogLevelWarn  = 2
   val LogLevelError = 3
+
+  /**
+   *  WCALL_VSTREAMS_LIST 0
+   * **/
+  type VideoStreamsMode = VideoStreamsMode.Value
+  object VideoStreamsMode extends Enumeration {
+    val List = 0
+  }
 
   object ParticipantsChangeDecoder extends CirceJSONSupport {
     import io.circe.{Decoder, parser}
